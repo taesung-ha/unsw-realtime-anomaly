@@ -12,10 +12,11 @@ from plotly.subplots import make_subplots
 from streamlit_autorefresh import st_autorefresh
 import matplotlib
 import matplotlib.pyplot as plt
+from river.drift import ADWIN
 
 # ===== Repo root import =====
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from db.db_config import DB_CONFIG  # <-- 환경에 맞춰 준비
+from db.db_config import DB_CONFIG  
 
 # ===== Page config =====
 st.set_page_config(page_title='Network Anomaly Detection Dashboard', layout='wide')
@@ -28,6 +29,13 @@ def get_pool():
     return SimpleConnectionPool(minconn=1, maxconn=8, **DB_CONFIG)
 
 # ===== Helpers =====
+def to_utc_ts(x):
+    """x를 UTC tz-aware pandas Timestamp로 통일"""
+    t = pd.Timestamp(x)
+    if t.tzinfo is None:
+        return t.tz_localize('UTC')
+    return t.tz_convert('UTC')
+
 def ensure_cols(df: pd.DataFrame, cols):
     for c in cols:
         if c not in df.columns:
@@ -97,6 +105,25 @@ def kl_divergence(p: pd.Series, q: pd.Series, eps=1e-12):
     p /= p.sum(); q /= q.sum()
     return float((p * np.log(p / q)).sum())
 
+def js_divergence(p: pd.Series, q: pd.Series, eps=1e-12):
+    """ Jensen–Shannon divergence (대칭/유한) """
+    idx = p.index.union(q.index)
+    p = p.reindex(idx, fill_value=0.0).astype(float) + eps
+    q = q.reindex(idx, fill_value=0.0).astype(float) + eps
+    p = p / p.sum(); q = q / q.sum()
+    m = 0.5 * (p + q)
+    kl_pm = (p * np.log(p / m)).sum()
+    kl_qm = (q * np.log(q / m)).sum()
+    return float(0.5 * (kl_pm + kl_qm))
+
+def cat_dist(series: pd.Series, smoothing=1.0):
+    """ 카테고리 시리즈 → 라플라스 스무딩된 확률분포(Series) """
+    vc = series.fillna("NA").value_counts()
+    counts = vc.astype(float) + smoothing
+    probs = counts / counts.sum()
+    probs.index = vc.index  # index 보존
+    return probs
+
 # ===== Data layer =====
 @st.cache_data(ttl=4, show_spinner=False)
 def load_data(start_dt_utc, proto_filter, service_filter, state_filter, limit_rows=None) -> pd.DataFrame:
@@ -159,6 +186,18 @@ with st.sidebar:
     burst_min_hits = st.number_input("Min anomalies in window", min_value=1, max_value=100000, value=5, step=1)
 
     st.markdown("---")
+
+    st.markdown("### Drift detectors")
+    enable_adwin = st.checkbox("Enable ADWIN on score", value=True)
+    adwin_delta = st.slider("ADWIN delta (smaller = sensitive)", min_value=1e-4, max_value=1e-1, value=2e-3, step=1e-3, format="%.4f")
+    regime_high = st.slider("High-score regime mean >", min_value=0.0, max_value=1.0, value=0.5, step=0.05)
+
+    ref_minutes = st.slider("Ref window for proto/state (min)", min_value=10, max_value=720, value=60, step=5)
+    drift_warn_js = st.slider("Warn if JS >", min_value=0.0, max_value=0.5, value=0.10, step=0.01)
+    drift_warn_l1 = st.slider("Warn if L1 >", min_value=0.0, max_value=2.0, value=0.30, step=0.05)
+    
+    st.markdown("---")
+    
     st.markdown("### Filters")
     def to_list(x): return [t.strip() for t in x.split(",") if t.strip()] if x else []
     proto_filter   = to_list(st.text_input("proto (comma-separated)", value="").strip()) or None
@@ -174,8 +213,9 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### Viz options")
     show_human_units = st.checkbox("Show human-readable bps in KPI labels", value=True)
-    topk_state = st.slider("Top-K states", min_value=5, max_value=20, value=8, step=1)
+    topk_state = st.slider("Top-K states", min_value=1, max_value=3, value=3, step=1)
 
+ 
 # ===== Load data =====
 now_utc = pd.Timestamp.now(tz='UTC')
 start_time_utc = now_utc - pd.Timedelta(minutes=minutes)
@@ -210,61 +250,176 @@ st.markdown("---")
 
 # ===== Score timeline =====
 st.subheader("Anomaly Scores Over Time")
-df_s = df_recent[['stime','score']].copy()
-if smooth_alpha and smooth_alpha > 0:
+
+# 필수 컬럼 체크
+if 'stime' not in df_recent.columns or 'score' not in df_recent.columns:
+    st.warning("Missing 'stime' or 'score' in dataframe.")
+    st.stop()
+
+# 시계열 준비
+df_s = (
+    df_recent[['stime', 'score']]
+    .copy()
+    .sort_values('stime')
+)
+# stime은 load_data에서 UTC tz-aware로 변환됨. 혹시 모를 누락 대비
+df_s['stime'] = pd.to_datetime(df_s['stime'], utc=True, errors='coerce')
+df_s.dropna(subset=['stime'], inplace=True)
+
+# score 정리: 숫자화 + NaN→0 + [0,1] 클리핑
+df_s['score'] = pd.to_numeric(df_s['score'], errors='coerce').fillna(0.0)
+df_s['score'] = df_s['score'].clip(0.0, 1.0)
+
+if df_s.empty:
+    st.info("No score data to plot in the selected window.")
+    st.stop()
+
+# 옵션 스무딩
+if smooth_alpha and (0.0 < smooth_alpha < 1.0):
     df_s['score_smooth'] = ema(df_s['score'], smooth_alpha)
     y_col = 'score_smooth'
 else:
     y_col = 'score'
 
-mask_anom = df_s[y_col] > score_threshold
+# 임계 초과 마커
+mask_anom = df_s[y_col] > float(score_threshold)
+
+# === ADWIN 초기화 / 유지 ===
+if 'adwin' not in st.session_state or st.session_state.get('adwin_delta') != adwin_delta:
+    st.session_state.adwin = ADWIN(delta=float(adwin_delta))
+    st.session_state.adwin_delta = float(adwin_delta)
+    st.session_state.adwin_events = []  # (UTC tz-aware timestamp, estimation)
+
+adwin = st.session_state.adwin
+adwin_events = st.session_state.adwin_events
+
+# 현재 창 경계 (UTC tz-aware)
+win_start = df_s['stime'].min().tz_convert('UTC')
+win_end   = df_s['stime'].max().tz_convert('UTC')
+
+# 창 이전 이벤트만 유지하고, 창 데이터로 재학습
+adwin_events = [(to_utc_ts(t), est) for (t, est) in adwin_events if to_utc_ts(t) < win_start]
+st.session_state.adwin = ADWIN(delta=float(adwin_delta))
+adwin = st.session_state.adwin
+
+for ts, sc in zip(df_s['stime'].values, df_s[y_col].fillna(0.0).astype(float).values):
+    adwin.update(float(sc))
+    if adwin.drift_detected:
+        adwin_events.append((to_utc_ts(ts), float(adwin.estimation)))
+
+# 세션 갱신
+st.session_state.adwin_events = adwin_events
+
+# === Plotly ===
 fig = go.Figure()
+
+# 시계열 라인
 fig.add_trace(go.Scatter(
-    x=df_s['stime'], y=df_s[y_col], mode='lines', name=f'{y_col}',
+    x=df_s['stime'], y=df_s[y_col],
+    mode='lines', name=y_col,
     hovertemplate='%{x|%Y-%m-%d %H:%M:%S UTC}<br>score=%{y:.3f}<extra></extra>'
 ))
-fig.add_hline(y=score_threshold, line_dash="dash",
-              annotation_text=f"threshold={score_threshold:.2f}", annotation_position="top left")
 
-# hit markers
-fig.add_trace(go.Scatter(
-    x=df_s.loc[mask_anom, 'stime'],
-    y=df_s.loc[mask_anom, y_col],
-    mode='markers', name='Anomaly hits',
-    marker=dict(size=8, symbol='x', color='red', line=dict(width=1, color='darkred'))
-))
+# 임계선
+fig.add_hline(
+    y=float(score_threshold),
+    line_dash="dash",
+    line_color="crimson",
+    line_width=2.5,
+    opacity=0.9,
+    annotation_text=f"threshold={float(score_threshold):.2f}",
+    annotation_position="top left"
+)
+
+# 히트 마커
+if mask_anom.any():
+    fig.add_trace(go.Scatter(
+        x=df_s.loc[mask_anom, 'stime'],
+        y=df_s.loc[mask_anom, y_col],
+        mode='markers', name='Anomaly hits',
+        marker=dict(size=8, symbol='x', color='red', line=dict(width=1, color='darkred'))
+    ))
+
+# ADWIN 경계선 (최근 N개)
+if enable_adwin and adwin_events:
+    for t, est in adwin_events[-8:]:
+        fig.add_vline(x=t, line_dash="dot", line_width=1)
+
 fig.update_layout(
     xaxis_title="Time (UTC)",
     yaxis_title="Anomaly Score",
-    yaxis=dict(range=[0,1]),
-    height=380, legend_title_text="", margin=dict(l=40, r=20, t=40, b=40),
+    yaxis=dict(range=[0, 1]),
+    height=380, legend_title_text="",
+    margin=dict(l=40, r=20, t=40, b=40),
     xaxis_rangeslider_visible=False
 )
+
 st.plotly_chart(fig, use_container_width=True)
 
-# ===== Burst alerts (window-based) =====
-latest_ts = pd.to_datetime(df_recent['stime'].max())
-t_start_burst = latest_ts - pd.Timedelta(minutes=burst_win_min)
+# === ADWIN 상태/알림 ===
+if enable_adwin:
+    cur_mean = float(getattr(adwin, 'estimation', np.nan))
+    regime = "anomaly" if cur_mean > float(regime_high) else "normal"
+    st.caption(f"ADWIN mean≈{cur_mean:.3f} → regime: **{regime}** (cutoff {float(regime_high):.2f})")
 
-anom_mask_window = (
-    (df_recent['stime'] >= t_start_burst) &
-    (df_recent['score'] > score_threshold)
-)
+    # 최근 1분 내 드리프트 감지 경고
+    if adwin_events:
+        last_event_ts = to_utc_ts(adwin_events[-1][0])
+        if (win_end - last_event_ts) <= pd.Timedelta(minutes=1):
+            st.warning(
+                f"ADWIN drift at {last_event_ts.strftime('%H:%M:%S')} "
+                f"(mean≈{adwin_events[-1][1]:.3f})"
+            )
 
-hits_in_window = int(anom_mask_window.sum())
+# ===== Input drift metrics (proto/state) =====
+st.markdown("---")
+st.subheader("Input drift — proto/state vs reference window")
 
-if hits_in_window >= burst_min_hits:
-    st.error(
-        f"⚠️ Burst detected: {hits_in_window:,} anomalies in last "
-        f"{burst_win_min} min (threshold {burst_min_hits:,})"
-    )
+WINDOW_SEC = 180  # 최근창 길이(초) — 아래 분포/차트 섹션과 동일하게 사용
+now2 = pd.to_datetime(df_recent['stime'].max())
+df_now = df_recent[df_recent['stime'] >= now2 - pd.Timedelta(seconds=WINDOW_SEC)].copy()
+
+# 참조창: 최근창 직전 구간
+ref_end = now2 - pd.Timedelta(seconds=WINDOW_SEC)
+ref_start = ref_end - pd.Timedelta(minutes=ref_minutes)
+df_ref = df_recent[(df_recent['stime'] >= ref_start) & (df_recent['stime'] < ref_end)].copy()
+
+if df_now.empty:
+    st.info(f"No events in the last {WINDOW_SEC}s.")
 else:
-    st.success(
-        f"No bursts: {hits_in_window:,}/{burst_min_hits:,} anomalies in last "
-        f"{burst_win_min} min"
-    )
+    if df_ref.empty:
+        st.info(f"Reference window empty ({ref_minutes} min before recent window).")
+    else:
+        # 분포 추정 (라플라스 스무딩)
+        p_ref_proto = cat_dist(df_ref['proto'])
+        p_now_proto = cat_dist(df_now['proto'])
+        p_ref_state = cat_dist(df_ref['state'])
+        p_now_state = cat_dist(df_now['state'])
+
+        # JS / L1 계산
+        js_proto = js_divergence(p_now_proto, p_ref_proto)
+        l1_proto = l1_divergence(p_now_proto, p_ref_proto)
+        js_state = js_divergence(p_now_state, p_ref_state)
+        l1_state = l1_divergence(p_now_state, p_ref_state)
+
+        cA, cB, cC, cD = st.columns(4)
+        cA.metric("JS(proto)", f"{js_proto:.3f}")
+        cB.metric("L1(proto)", f"{l1_proto:.3f}")
+        cC.metric("JS(state)", f"{js_state:.3f}")
+        cD.metric("L1(state)", f"{l1_state:.3f}")
+
+        proto_alert = (js_proto > float(drift_warn_js)) or (l1_proto > float(drift_warn_l1))
+        state_alert = (js_state > float(drift_warn_js)) or (l1_state > float(drift_warn_l1))
+
+        if proto_alert and state_alert:
+            st.error("Proto & State drift detected (JS/L1 over thresholds).")
+        elif proto_alert or state_alert:
+            st.warning("Drift signal detected in one of proto/state.")
+        else:
+            st.success("No proto/state drift against reference window.")
 
 # ===== Label distribution =====
+st.markdown("---")
 st.subheader(f"Normal vs Anomaly ({minutes}-minute window)")
 label_mapping = {0: "Normal", 1: "Anomaly"}
 lab = df_recent['label'].fillna(0).astype(int).map(label_mapping)
@@ -358,10 +513,7 @@ st.markdown("---")
 # ===== Protocol / State distributions (recent window + drift) =====
 st.subheader("Protocol / State Distributions — recent window")
 
-WINDOW_SEC = 180  # 최근 3분
-now2 = pd.to_datetime(df_recent['stime'].max())
-df_now = df_recent[df_recent['stime'] >= now2 - pd.Timedelta(seconds=WINDOW_SEC)].copy()
-
+# WINDOW_SEC / df_now는 위의 Input drift 섹션과 동일 객체 사용
 if df_now.empty:
     st.info(f"No events in the last {WINDOW_SEC}s.")
 else:
