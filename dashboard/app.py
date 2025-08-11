@@ -524,4 +524,3 @@ st.download_button("Download Top 10 anomalies (CSV)", data=csv_top,
 # ===== Auto-refresh =====
 if enable_autorefresh:
     st_autorefresh(interval=refresh_ms, key="auto-refresh")
-#test
