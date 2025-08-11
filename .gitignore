@@ -1,6 +1,11 @@
 .env
 test.py
-data
+data/UNSW_NB15_training-set.csv
+data/UNSW_NB15_testing-set.csv
+data/UNSW-NB15_1.csv
+data/UNSW-NB15_2.csv
+data/UNSW-NB15_3.csv
+data/UNSW-NB15_4.csv
 model/cat_thresholds.pkl
 model/clamp_thresholds.pkl
 model/full_cat_thresholds.pkl
