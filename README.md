@@ -3,7 +3,7 @@
 End-to-end pipeline for **real-time network anomaly detection**: ingest → infer → persist → monitor.  
 It combines classic/statistical detectors (**Random Forest**, **ADWIN**, **KL/L1 divergence**) with a production-minded data stack (**Kafka**, **FastAPI**, **PostgreSQL**, **Docker Compose**) and a **Streamlit** dashboard.
 
-[![Watch the demo](assets/demo-thumb.gif)](https://youtu.be/YOUR_VIDEO_ID "Watch the 60s demo on YouTube")  
+[![Watch the demo](assets/anomaly_detection.png)](https://youtu.be/XSlEOjZ624Y "Watch the 60s demo on YouTube")  
 > 60s demo: ingest → score → store → dashboard (burst alert)
 
 ---
@@ -19,24 +19,7 @@ It combines classic/statistical detectors (**Random Forest**, **ADWIN**, **KL/L1
 
 ## Architecture
 
-```mermaid
-flowchart LR
-  subgraph Ingestion
-    P[Producer\nkafka/stream_producer.py]
-  end
-  subgraph Broker
-    K[Kafka Topic:\nnetwork-log]
-  end
-  subgraph Serving
-    A[FastAPI\nserving/api_server.py\n• RandomForest scoring\n• ADWIN / KL / L1\n• Slack alerts (opt)]
-    DB[(PostgreSQL\npublic.anomaly_scores)]
-  end
-  subgraph Dashboard
-    S[Streamlit\ndashboard/app.py\n• RT charts\n• burst detection\n• dist/heatmaps]
-  end
-
-  P -->|events| K -->|consume| A -->|scores| DB -->|SQL| S
-```
+![real-time-anomaly-diagram](assets/diagram-8-13.png)
 
 ---
 
@@ -195,13 +178,12 @@ Built-in optimizations: caching (`@st.cache_resource`, `@st.cache_data`), connec
 
 ## Demo
 
-- **Full video (YouTube)**: https://youtu.be/YOUR_VIDEO_ID  
-- **60s overview (Loom)**: https://www.loom.com/share/YOUR_LOOM_ID
+- **Full video (YouTube)**: https://youtu.be/XSlEOjZ624Y  
 
 <details>
   <summary>GIF preview (click to expand)</summary>
 
-  ![Real-time demo](assets/demo-preview.gif)
+  ![Real-time demo](assets/anomaly_detection.png)
 
 </details>
 
@@ -214,7 +196,7 @@ Built-in optimizations: caching (`@st.cache_resource`, `@st.cache_data`), connec
 
 **Example Slack message:**
 
-![Slack alert screenshot](assets/slack-alert.png)
+![Slack alert screenshot](assets/slack-message.png)
 
 Payload snippet:
 ```json
