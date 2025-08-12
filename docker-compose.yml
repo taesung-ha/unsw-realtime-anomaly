@@ -1,4 +1,5 @@
-version: '3'
+version: '3.9'
+
 services:
   zookeeper:
     image: confluentinc/cp-zookeeper:7.2.1
@@ -21,3 +22,34 @@ services:
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+  db:
+    image: postgres:14
+    container_name: postgres_db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - ./db/init.sql:/app/db/init.sql
+      - db_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  api:
+    build:
+      context: .
+      dockerfile: serving/Dockerfile
+    container_name: fastapi_app
+    env_file: .env
+    depends_on:
+      - kafka
+      - db
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./model:/app/model
+
+volumes:
+  db_data:

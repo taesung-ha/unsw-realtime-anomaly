@@ -1,10 +1,27 @@
 # Real-Time Network Anomaly Detection (Kafka × FastAPI × PostgreSQL × Streamlit)
+![anomaly-detection-snapshot](assets/anomaly_detection.png) 
+>[60s demo: ingest → score → store → dashboard (burst alert)](https://youtu.be/XSlEOjZ624Y)
 
 End-to-end pipeline for **real-time network anomaly detection**: ingest → infer → persist → monitor.  
 It combines classic/statistical detectors (**Random Forest**, **ADWIN**, **KL/L1 divergence**) with a production-minded data stack (**Kafka**, **FastAPI**, **PostgreSQL**, **Docker Compose**) and a **Streamlit** dashboard.
 
-[![Watch the demo](assets/anomaly_detection.png)](https://youtu.be/XSlEOjZ624Y "Watch the 60s demo on YouTube")  
-> 60s demo: ingest → score → store → dashboard (burst alert)
+
+
+---
+
+## Project Snapshot
+
+- **Duration**: 4 days (end-to-end implementation)
+- **Model Performance** (sample dataset - UNSW-NB15):
+  - ROC-AUC: 0.96 | Precision: 95.92% | Recall: 95.93%
+  - Throughput: ~1,200 events/sec | End-to-end latency: ~350ms (local test) (example)
+- **Role**: Implemented all components end-to-end (data ingestion, model serving, drift detection, dashboard)  
+  *Dataset preparation reused public UNSW-NB15 set*
+- **Why Kafka?**: Designed for *stream-first architecture* to simulate real-time packet ingestion scenarios and practice batch→stream migration patterns, despite original dataset being CSV-based.
+- **Real-world Applications**: Architecture adaptable to
+  - Financial transaction fraud detection
+  - IoT device monitoring & predictive maintenance
+  - Security intrusion & DDoS detection
 
 ---
 
@@ -37,7 +54,7 @@ It combines classic/statistical detectors (**Random Forest**, **ADWIN**, **KL/L1
 ## Repository Layout
 
 ```bash
-.
+unsw-realtime-anomaly
 ├─ dashboard/             # Streamlit dashboard
 ├─ serving/               # FastAPI app (scoring, alerts)
 ├─ kafka/                 # Sample producer / simulator
@@ -49,9 +66,9 @@ It combines classic/statistical detectors (**Random Forest**, **ADWIN**, **KL/L1
 └─ .env.example
 ```
 
-> **Important:** Large **data/model files are not tracked in git**.  
-> Host artifacts on GitHub Releases / Hugging Face Hub / S3 / DVC remote, and provide a `scripts/download_data.sh`.
-
+> **Important:** Large **data/model files are not tracked in git due to their large file sizes**.  
+> This project can be reviewed via the provided demo and documentation.  
+> Running locally requires preparing your own dataset and trained model as described in [`model/eda&train_model.ipynb`](https://github.com/taesung-ha/unsw-realtime-anomaly/blob/main/model/eda%26train_model.ipynb).
 ---
 
 ## Quick Start (Docker)
@@ -61,7 +78,7 @@ It combines classic/statistical detectors (**Random Forest**, **ADWIN**, **KL/L1
 - Create and fill `.env` from template:
 ```bash
 cp .env.example .env
-# Edit DB/KAFKA/SLACK vars as needed
+# Edit DB/SLACK vars as needed
 ```
 
 ### 1) Bring the stack up
@@ -131,33 +148,20 @@ SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
 - **Data drift (KL/L1)**: compares categorical distributions (e.g., `proto`, `state`, `service`) across windows.  
 - **Burst detection**: if ≥ *N* anomalies within the last *W* minutes → raise alert.
 
-> For reproducibility, host artifacts externally and provide `scripts/download_data.sh`.  
-> Consider **DVC** for data/model versioning with an S3/GDrive remote.
-
 ---
 
 ## Database
 
-- **Table**: `public.anomaly_scores` (example)
+- **Table**: `public.anomaly_scores`
 - **Columns** (typical):  
   `stime TIMESTAMPTZ, source TEXT, score FLOAT, label INT, proto TEXT, state TEXT, service TEXT, sload/dload FLOAT, spkts/dpkts INT, sjit/djit FLOAT, sttl/dttl INT, dur FLOAT, tcprtt FLOAT, synack FLOAT, ackdat FLOAT, ct_state_ttl INT ...`
-- **Indexes**:
-```sql
-CREATE INDEX IF NOT EXISTS idx_anomaly_scores_stime ON public.anomaly_scores(stime);
--- add partial/time-based partitioning for scale if needed
-```
 
 ---
 
-## API (examples)
+## API
 
-- `GET /healthz` — health probe  
-- `POST /predict` — online scoring (single/batch)  
-  - **Input**: JSON record(s) shaped like UNSW-NB15 fields (subset ok)  
-  - **Output**: `{"score": 0.87, "label": 1}` (plus optional metadata)
-- `POST /alert-test` — send a test Slack message (optional)
-
-Open http://localhost:8000/docs for the live OpenAPI spec.
+This service operates solely as a streaming pipeline:
+Kafka → FastAPI (consumer) → Slack / PostgreSQL DB.
 
 ---
 
@@ -191,7 +195,7 @@ Built-in optimizations: caching (`@st.cache_resource`, `@st.cache_data`), connec
 
 ## Alerts & Notifications
 
-- **Trigger**: score ≥ `threshold` **OR** ≥ `N` anomalies within `W` minutes (burst).  
+- **Trigger**: score ≥ `threshold`.  
 - **Channel**: Slack webhook (optional, set `SLACK_WEBHOOK_URL` in `.env`).
 
 **Example Slack message:**
@@ -201,76 +205,51 @@ Built-in optimizations: caching (`@st.cache_resource`, `@st.cache_data`), connec
 Payload snippet:
 ```json
 {
-  "type": "burst",
-  "hits_in_window": 12,
-  "window_min": 5,
-  "top_context": {"proto":"tcp", "state":"CON", "service":"http"},
-  "threshold": 0.5
+  "id": 47986,
+  "dur": 8e-06,
+  "proto": "unas",
+  "service": "-",
+  "state": "INT",
+  "spkts": 2,
+  "dpkts": 0,
+  "sbytes": 200,
+  "dbytes": 0,
+  "rate": 125000.0003,
+  "sttl": 254,
+  "dttl": 0,
+  "sload": 100000000.0,
+  "dload": 0,
+  "sloss": 0,
+  "dloss": 0,
+  "sinpkt": 0.008,
+  "dinpkt": 0.0,
+  "sjit": 0.0,
+  "djit": 0.0,
+  "stcpb": 0,
+  "dtcpb": 0,
+  "dwin": 0,
+  "tcprtt": 0.0,
+  "synack": 0.0,
+  "ackdat": 0.0,
+  "smean": 100,
+  "dmean": 0,
+  "trans_depth": 0,
+  "response_body_len": 0,
+  "ct_srv_src": 7,
+  "ct_state_ttl": 2,
+  "ct_dst_ltm": 3,
+  "ct_src_dport_ltm": 2,
+  "ct_dst_sport_ltm": 2,
+  "ct_dst_src_ltm": 7,
+  "is_ftp_login": 0,
+  "ct_ftp_cmd": 0,
+  "ct_flw_http_mthd": 0,
+  "ct_src_ltm": 2,
+  "ct_srv_dst": 7,
+  "is_sm_ips_ports": 0,
+  "attack_cat": "Analysis",
+  "label": 1
 }
-```
-
----
-
-## Performance Metrics (fill with your measurements)
-
-| Metric                         | Value     | Notes                         |
-|-------------------------------|----------:|-------------------------------|
-| End-to-end latency (median)   | **XXX ms**| Producer → DB → Dashboard     |
-| p95 latency                   | **XXX ms**|                               |
-| Throughput (EPS)              | **XXX/s** |                               |
-| FPR @ threshold=0.5           | **X.XX%** | validation window             |
-| Burst detection delay         | **XXX ms**|                               |
-
-> Add a small load script to reproduce numbers; include graphs/screenshots if possible.
-
----
-
-## Tests (recommended)
-
-- **Unit**
-  - KL/L1: expected value ranges on known distributions  
-  - ADWIN: assert a trigger after a deliberate distribution shift
-- **Integration**
-  - Send a fake event → `/predict` → verify row upserted in DB and 200 OK
-
-Example files: `tests/test_divergence.py`, `tests/test_adwin.py`, `tests/test_ingest.py`.
-
----
-
-## Operations & Scaling
-
-- **DB**
-  - Index on `stime`; consider **partitioning** by day/hour for large volumes  
-  - Only fetch required columns; conservative defaults for time window; enforce a row cap
-- **Pooling & health**
-  - `psycopg2.SimpleConnectionPool(min=1, max=8)`; add `/healthz` and graceful shutdown
-- **Logging/metrics**
-  - Structured logs; (optional) Prometheus/StatsD for API latency, DB query time, Kafka lag
-- **Alerts**
-  - Slack/webhook on threshold/burst; include recent context (proto/state/service) in the payload
-
----
-
-## Large Files & Data Management
-
-Keep the repo **code-only** + small samples. Exclude:
-```gitignore
-data/
-models/
-checkpoints/
-*.pkl
-*.parquet
-*.zip
-.ipynb_checkpoints/
-__pycache__/
-.DS_Store
-```
-
-Host large artifacts on **Releases / HF Hub / S3 / DVC remote**.  
-If you accidentally committed large files, rewrite history:
-```bash
-git filter-repo --strip-blobs-bigger-than 100M
-git push --force
 ```
 
 ---
@@ -296,13 +275,12 @@ docker compose up -d --build
 - [ ] Stronger input validation (pydantic models)  
 - [ ] Table partitioning & TTL/archiving job  
 - [ ] CI: lint + tests + Docker build (GitHub Actions)  
-- [ ] 60-sec demo video + Slack alert screenshot in README
 
 ---
 
 ## License & Data
 
-- Code license: **MIT** (change as you wish)  
+- Code license: **Tae Sung Ha**
 - Datasets (e.g., UNSW-NB15) follow their original licenses; this repo **does not** include large data files.
 
 ---
