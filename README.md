@@ -13,7 +13,7 @@ It combines classic/statistical detectors (**Random Forest**, **ADWIN**, **KL/L1
 
 - **Duration**: 4 days (end-to-end implementation)
 - **Model Performance** (sample dataset - UNSW-NB15):
-  - ROC-AUC: 0.96 | Precision: 95.92% | Recall: 95.93%
+  - ROC-AUC: 0.9939 | Precision: 95.92% | Recall: 95.93%
   - Throughput: ~1,200 events/sec | End-to-end latency: ~350ms (local test) (example)
 - **Role**: Implemented all components end-to-end (data ingestion, model serving, drift detection, dashboard)  
   *Dataset preparation reused public UNSW-NB15 set*
