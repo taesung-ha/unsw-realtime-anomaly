@@ -6,14 +6,22 @@ End-to-end pipeline for **real-time network anomaly detection**: ingest → infe
 It combines classic/statistical detectors (**Random Forest**, **ADWIN**, **KL/L1 divergence**) with a production-minded data stack (**Kafka**, **FastAPI**, **PostgreSQL**, **Docker Compose**) and a **Streamlit** dashboard.
 
 
-
 ---
 
 ## Project Snapshot
 
 - **Duration**: 4 days (end-to-end implementation)
+
 - **Model Performance** (sample dataset - UNSW-NB15):
-  - ROC-AUC: 0.9939 | Precision: 95.92% | Recall: 95.93%
+  - ROC-AUC: 0.9939 | PR-AUC: 0.9921 | Precision: 95.92% | Recall: 95.93% | F1-score: 95.92%
+
+  - Confusion Matrix:  
+
+    |            | Predicted 0 | Predicted 1 |
+    |------------|-------------|-------------|
+    | Actual 0   |   10004     |     872     |
+    | Actual 1   |    555      |    23314    |
+
   - Throughput: ~1,200 events/sec | End-to-end latency: ~350ms (local test) (example)
 - **Role**: Implemented all components end-to-end (data ingestion, model serving, drift detection, dashboard)  
   *Dataset preparation reused public UNSW-NB15 set*
@@ -33,6 +41,15 @@ It combines classic/statistical detectors (**Random Forest**, **ADWIN**, **KL/L1
 - **Monitoring**: fast WebGL-backed charts; filters & guardrails for large windows
 
 ---
+
+## The reported model metrics were reproduced locally using:
+- UNSW-NB15 (preprocessed version)
+- RandomForestClassifier with params: n_estimators=100, random_state=0
+- train/test split (70/30)
+- No hyperparameter tuning
+- sklearn 1.4.0, Python 3.10
+
+--- 
 
 ## Architecture
 
