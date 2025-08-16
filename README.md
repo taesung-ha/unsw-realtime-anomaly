@@ -297,7 +297,7 @@ docker compose up -d --build
 
 ## License & Data
 
-- Code license: **Tae Sung Ha**
+- Code license: **MIT**
 - Datasets (e.g., UNSW-NB15) follow their original licenses; this repo **does not** include large data files.
 
 ---
